@@ -77,7 +77,14 @@ func (lp *LaunchPad) GetMissing(apps Apps, appType int) ([]string, error) {
 	return missing, nil
 }
 
-// ClearGroups clears out items related to groups
+// RemoveOmitted removes auto-created pages containing apps not in config file
+func (lp *LaunchPad) RemoveOmitted(pageIDs []int) error {
+	utils.Indent(log.Info)("remove omitted apps")
+
+	return lp.DB.Delete(&Item{}, "rowid in (?)", pageIDs).Error
+}
+
+// ClearGroups clears root/folder/page groups
 func (lp *LaunchPad) ClearGroups() error {
 	utils.Indent(log.Info)("clear out groups")
 
@@ -90,12 +97,12 @@ func (lp *LaunchPad) AddRootsAndHoldingPages() error {
 	utils.Indent(log.Info)("add root and holding pages")
 
 	items := []Item{
-		Item{ID: 1, UUID: "ROOTPAGE", Type: RootType, ParentID: 0, Ordering: 0},
-		Item{ID: 2, UUID: "HOLDINGPAGE", Type: PageType, ParentID: 1, Ordering: 0},
-		Item{ID: 3, UUID: "ROOTPAGE_DB", Type: RootType, ParentID: 0, Ordering: 0},
-		Item{ID: 4, UUID: "HOLDINGPAGE_DB", Type: PageType, ParentID: 3, Ordering: 0},
-		Item{ID: 5, UUID: "ROOTPAGE_VERS", Type: RootType, ParentID: 0, Ordering: 0},
-		Item{ID: 6, UUID: "HOLDINGPAGE_VERS", Type: PageType, ParentID: 5, Ordering: 0},
+		{ID: 1, UUID: "ROOTPAGE", Type: RootType, ParentID: 0, Ordering: 0},
+		{ID: 2, UUID: "HOLDINGPAGE", Type: PageType, ParentID: 1, Ordering: 0},
+		{ID: 3, UUID: "ROOTPAGE_DB", Type: RootType, ParentID: 0, Ordering: 0},
+		{ID: 4, UUID: "HOLDINGPAGE_DB", Type: PageType, ParentID: 3, Ordering: 0},
+		{ID: 5, UUID: "ROOTPAGE_VERS", Type: RootType, ParentID: 0, Ordering: 0},
+		{ID: 6, UUID: "HOLDINGPAGE_VERS", Type: PageType, ParentID: 5, Ordering: 0},
 	}
 
 	for _, item := range items {
@@ -266,14 +273,14 @@ func (lp *LaunchPad) updateItem(item string, ordering, groupID, itemType int) er
 }
 
 // ApplyConfig places all the launchpad apps
-func (lp *LaunchPad) ApplyConfig(config Apps, itemType, groupID, rootParentID int) (int, error) {
-
+func (lp *LaunchPad) ApplyConfig(config Apps, itemType, groupID, rootParentID int, missing []string) (int, []int, error) {
+	var omitPageIDs []int
 	for _, page := range config.Pages {
 		// create a new page
 		groupID++
 		err := lp.createNewPage(page.Number, groupID, rootParentID)
 		if err != nil {
-			return groupID, errors.Wrap(err, "createNewPage")
+			return groupID, nil, errors.Wrap(err, "createNewPage")
 		}
 
 		pageParentID := groupID
@@ -281,21 +288,28 @@ func (lp *LaunchPad) ApplyConfig(config Apps, itemType, groupID, rootParentID in
 		for idx, item := range page.Items {
 			switch item.(type) {
 			case string:
+				if missing != nil {
+					for _, name := range missing {
+						if name == item.(string) {
+							omitPageIDs = append(omitPageIDs, pageParentID)
+						}
+					}
+				}
 				// add a flat item
 				if err := lp.updateItem(item.(string), idx, pageParentID, itemType); err != nil {
-					return groupID, errors.Wrap(err, "updateItem")
+					return groupID, nil, errors.Wrap(err, "updateItem")
 				}
 			default:
 				var folder AppFolder
 				if err := mapstructure.Decode(item, &folder); err != nil {
-					return groupID, errors.Wrap(err, "mapstructure unable to decode config folder")
+					return groupID, nil, errors.Wrap(err, "mapstructure unable to decode config folder")
 				}
 
 				// create a new folder
 				groupID++
 				err := lp.createNewFolder(folder.Name, idx, groupID, pageParentID)
 				if err != nil {
-					return groupID, errors.Wrap(err, "createNewFolder")
+					return groupID, nil, errors.Wrap(err, "createNewFolder")
 				}
 
 				folderParentID := groupID
@@ -304,13 +318,13 @@ func (lp *LaunchPad) ApplyConfig(config Apps, itemType, groupID, rootParentID in
 					// create a new folder page
 					groupID++
 					if err := lp.createNewFolderPage(fpage.Number, groupID, folderParentID); err != nil {
-						return groupID, errors.Wrap(err, "createNewFolderPage")
+						return groupID, nil, errors.Wrap(err, "createNewFolderPage")
 					}
 
 					// add all folder page items
 					for fidx, fitem := range fpage.Items {
 						if err := lp.updateItem(fitem, fidx, groupID, itemType); err != nil {
-							return groupID, errors.Wrap(err, "updateItem")
+							return groupID, nil, errors.Wrap(err, "updateItem")
 						}
 					}
 				}
@@ -318,7 +332,8 @@ func (lp *LaunchPad) ApplyConfig(config Apps, itemType, groupID, rootParentID in
 		}
 	}
 
-	return groupID, nil
+	omitPageIDs = utils.Unique(omitPageIDs)
+	return groupID, omitPageIDs, nil
 }
 
 // EnableTriggers enables item update triggers

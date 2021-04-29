@@ -36,7 +36,7 @@ var (
 )
 
 // add missing apps to pages at 30 apps per page
-func parseMissing(missing []string, pages []database.Page) []database.Page {
+func parseMissing(missing []string, pages []database.Page, omitMissingApps bool) []database.Page {
 	if len(missing) > 0 {
 		for _, chunk := range split(missing, 30) {
 			p := database.Page{
@@ -51,9 +51,14 @@ func parseMissing(missing []string, pages []database.Page) []database.Page {
 
 			p.Items = chunkInterface
 			pages = append(pages, p)
+			msg := ""
 			for _, smallerChunk := range split(chunk, 5) {
-				msg := fmt.Sprintf("adding missing apps to page=%d", p.Number)
-				utils.DoubleIndent(log.WithField("apps", smallerChunk).Warn)(msg)
+				if omitMissingApps {
+					msg = "omitting missing apps"
+				} else {
+					msg = fmt.Sprintf("adding missing apps to page=%d", p.Number)
+				}
+				utils.TripleIndent(log.WithField("apps", smallerChunk).Warn)(msg)
 			}
 		}
 	}
@@ -175,7 +180,7 @@ func CmdDefaultOrg(verbose bool) error {
 	groupID := int(float64(lpad.GetMaxAppID()))
 	// groupID := int(math.Max(float64(lpad.GetMaxAppID()), float64(lpad.GetMaxWidgetID())))
 
-	utils.Indent(log.Info)("creating folders out of app categories")
+	utils.Indent(log.Info)("creating folders from default categories")
 
 	// Create default config file
 	var apps []database.App
@@ -228,8 +233,8 @@ func CmdDefaultOrg(verbose bool) error {
 		log.WithError(err).Fatal("Default GetMissing=>Apps")
 	}
 
-	conf.Apps.Pages = parseMissing(missing, conf.Apps.Pages)
-	groupID, err = lpad.ApplyConfig(conf.Apps, database.ApplicationType, groupID, 1)
+	conf.Apps.Pages = parseMissing(missing, conf.Apps.Pages, false)
+	groupID, _, err = lpad.ApplyConfig(conf.Apps, database.ApplicationType, groupID, 1, nil)
 	if err != nil {
 		log.WithError(err).Fatal("Default ApplyConfig==>Apps")
 	}
@@ -351,9 +356,9 @@ func CmdSaveConfig(verbose bool, configFile string) error {
 }
 
 // CmdLoadConfig will load your launchpad settings from a config file
-func CmdLoadConfig(verbose bool, configFile string) error {
+func CmdLoadConfig(verbose bool, configFile string, omitMissingApps bool) error {
 
-	log.Infof(bold, "PARSE LAUCHPAD DATABASE")
+	log.Infof(bold, "PARSE LAUNCHPAD DATABASE")
 
 	if verbose {
 		log.SetLevel(log.DebugLevel)
@@ -440,10 +445,18 @@ func CmdLoadConfig(verbose bool, configFile string) error {
 		log.WithError(err).Fatal("GetMissing=>Apps")
 	}
 
-	config.Apps.Pages = parseMissing(missing, config.Apps.Pages)
-	groupID, err = lpad.ApplyConfig(config.Apps, database.ApplicationType, groupID, 1)
+	var missingAppPageIDs []int
+	config.Apps.Pages = parseMissing(missing, config.Apps.Pages, omitMissingApps)
+	groupID, missingAppPageIDs, err = lpad.ApplyConfig(config.Apps, database.ApplicationType, groupID, 1, missing)
 	if err != nil {
 		log.WithError(err).Fatal("ApplyConfig=>Apps")
+	}
+
+	if omitMissingApps {
+		err = lpad.RemoveOmitted(missingAppPageIDs)
+		if err != nil {
+			log.WithError(err).Fatal("OmitMissing=>Apps")
+		}
 	}
 
 	// Re-enable the update triggers
@@ -480,6 +493,10 @@ func main() {
 			Name:  "verbose, V",
 			Usage: "verbose output",
 		},
+		cli.BoolFlag{
+			Name:  "silent, S",
+			Usage: "don't ask to save before applying new config",
+		},
 	}
 	app.Commands = []cli.Command{
 		{
@@ -489,10 +506,12 @@ func main() {
 				fmt.Println(porg)
 
 				backup := false
-				prompt := &survey.Confirm{
-					Message: "Backup your current Launchpad settings?",
+				if !c.GlobalBool("silent") {
+					prompt := &survey.Confirm{
+						Message: "Backup your current Launchpad settings?",
+					}
+					survey.AskOne(prompt, &backup, nil)
 				}
-				survey.AskOne(prompt, &backup, nil)
 
 				if backup {
 					err := CmdSaveConfig(c.GlobalBool("verbose"), savePath("", c.GlobalBool("icloud")))
@@ -512,7 +531,7 @@ func main() {
 			Flags: []cli.Flag{
 				cli.StringFlag{
 					Name:  "config, c",
-					Usage: "Save configuration to `FILE`",
+					Usage: "save configuration to `FILE`",
 				},
 			},
 			Action: func(c *cli.Context) error {
@@ -534,14 +553,22 @@ func main() {
 		{
 			Name:  "load",
 			Usage: "load launchpad settings config from `FILE`",
+			Flags: []cli.Flag{
+				cli.BoolFlag{
+					Name:  "omit, O",
+					Usage: "don't add apps missing from config file",
+				},
+			},
 			Action: func(c *cli.Context) error {
 				if c.Args().Present() {
 
 					backup := false
-					prompt := &survey.Confirm{
-						Message: "Backup your current Launchpad settings?",
+					if !c.GlobalBool("silent") {
+						prompt := &survey.Confirm{
+							Message: "Backup your current Launchpad settings?",
+						}
+						survey.AskOne(prompt, &backup, nil)
 					}
-					survey.AskOne(prompt, &backup, nil)
 
 					if backup {
 						err := CmdSaveConfig(c.GlobalBool("verbose"), savePath("", c.GlobalBool("icloud")))
@@ -553,7 +580,7 @@ func main() {
 					}
 
 					// user supplied launchpad config YAMLdep
-					err := CmdLoadConfig(c.GlobalBool("verbose"), c.Args().First())
+					err := CmdLoadConfig(c.GlobalBool("verbose"), c.Args().First(), c.Bool("omit"))
 					if err != nil {
 						return err
 					}
@@ -567,7 +594,7 @@ func main() {
 			Name:  "revert",
 			Usage: "revert to launchpad settings backup",
 			Action: func(c *cli.Context) error {
-				return CmdLoadConfig(c.GlobalBool("verbose"), savePath("", c.GlobalBool("icloud")))
+				return CmdLoadConfig(c.GlobalBool("verbose"), savePath("", c.GlobalBool("icloud")), false)
 			},
 		},
 	}

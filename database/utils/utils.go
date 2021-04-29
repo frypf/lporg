@@ -40,23 +40,36 @@ func TripleIndent(f func(s string)) func(string) {
 }
 
 // StringInSlice finds string in array
-func StringInSlice(a string, list []string) bool {
-	for _, b := range list {
-		if b == a {
+func StringInSlice(str string, list []string) bool {
+	for _, entry := range list {
+		if entry == str {
 			return true
 		}
 	}
 	return false
 }
 
-// AppendIfMissing with append a string to a array if it doesn't already contain that string
-func AppendIfMissing(slice []string, i string) []string {
-	for _, ele := range slice {
-		if ele == i {
-			return slice
+// AppendIfMissing appends a string to an array if it doesn't already contain that string
+func AppendIfMissing(list []string, str string) []string {
+	for _, entry := range list {
+		if entry == str {
+			return list
 		}
 	}
-	return append(slice, i)
+	return append(list, str)
+}
+
+// Unique removes duplicate numbers from an int array
+func Unique(list []int) []int {
+	keys := make(map[int]bool)
+	newList := []int{}
+	for _, entry := range list {
+		if _, value := keys[entry]; !value {
+			keys[entry] = true
+			newList = append(newList, entry)
+		}
+	}
+	return newList
 }
 
 func checkError(err error) {
