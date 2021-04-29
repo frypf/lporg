@@ -23,3 +23,5 @@ launchpad-save.yaml
 launchpad.yaml
 launchpad.BACKUP.yaml
 .hack
+
+.DS_Store
